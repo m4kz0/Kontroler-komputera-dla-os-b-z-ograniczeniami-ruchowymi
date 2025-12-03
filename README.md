@@ -1,0 +1,1 @@
+# Kontroler-komputera-dla-os-b-z-ograniczeniami-ruchowymi
