@@ -5,7 +5,18 @@ from pynput.mouse import Button, Controller as MouseController
 #from screeninfo import get_monitors
 import time
 import warnings
+'''
+aktualny stan projektu
 
+glowa - sterowanie myszka
+lewy kciuk - lewy mouse click
+prawy kciuk - prawy mouse click
+lewy wskazujacy i srodkowy - scroll w dol
+prawy wskazujacy i srodkowy - scroll w gore
+sam lewy wskazujacy - strzalka w lewo
+sam prawy wskazujacy - strzalka w prawo
+
+'''
 warnings.filterwarnings('ignore', category=UserWarning)
 
 # ustawienia globalne
@@ -13,14 +24,14 @@ ACTION_COOLDOWN = 0.5  # minimalny czas między akcjami, żeby uniknąć wielokl
 last_action_time = time.time()
 
 # zmienne dla klikniecia przytrzymania
-HOLD_THRESHOLD = 0.5  # zzas w sekundach po którym kliknięcie staje się przytrzymaniem
+HOLD_THRESHOLD = 0.5  # czas w sekundach po którym kliknięcie staje się przytrzymaniem
 left_click_held = False
 thumb_up_start_time = 0.0
 
 # parametry dla sterowania kursorem twarzą (sterowanie relatywne)
 SENSITIVITY = 150  # wieksza czulosc
 DEAD_ZONE = 0.01  # mniejsza martwa strefa
-SCROLL_SPEED = 5  # ustawienie prędkości przewijania myszy
+SCROLL_SPEED = 15  # ustawienie prędkości przewijania myszy
 
 #  konfiguracja środowiska i kontrolerów
 try:
@@ -201,14 +212,14 @@ while cap.isOpened():
                     last_action_time = current_time
                     action_triggered = True
 
-                # gest prawa reka czyli scrool w gore
+                # gest prawa reka czyli scroll w gore
                 elif hand_label == "Right" and two_fingers_up:
                     mouse.scroll(0, SCROLL_SPEED)
                     current_gesture = "prawa: scroll up"
                     last_action_time = current_time
                     action_triggered = True
 
-                # gest lewa reka scrool w dol
+                # gest lewa reka scroll w dol
                 elif hand_label == "Left" and two_fingers_up:
                     mouse.scroll(0, -SCROLL_SPEED)
                     current_gesture = "lewa: scroll down"
