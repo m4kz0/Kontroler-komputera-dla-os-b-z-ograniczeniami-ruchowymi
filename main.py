@@ -28,10 +28,14 @@ HOLD_THRESHOLD = 0.5  # czas w sekundach po którym kliknięcie staje się przyt
 left_click_held = False
 thumb_up_start_time = 0.0
 
-# parametry dla sterowania kursorem twarzą (sterowanie relatywne)
-SENSITIVITY = 150  # wieksza czulosc
-DEAD_ZONE = 0.01  # mniejsza martwa strefa
+# parametry dla sterowania kursorem twarzą
+SENSITIVITY = 150  #czulosc
+DEAD_ZONE = 0.01  #martwa strefa
 SCROLL_SPEED = 15  # ustawienie prędkości przewijania myszy
+
+# ZMIENNE DLA DYNAMICZNEGO SRODKA
+base_x, base_y = 0.5, 0.5
+SMOOTH_FACTOR = 0.01 # wspolczynnik adaptacji srodka
 
 #  konfiguracja środowiska i kontrolerów
 try:
@@ -53,7 +57,7 @@ mp_drawing = mp.solutions.drawing_utils
 keyboard = KeyboardController()
 mouse = MouseController()
 
-#  inicjalizacja stabilnych modeli mediapipe
+#  inicjalizacja dzialajacych modeli mediapipe
 
 # model dłoni
 mp_hands = mp.solutions.hands
@@ -72,7 +76,7 @@ drawing_spec_pose = mp_drawing.DrawingSpec(thickness=2, circle_radius=2, color=(
 #  inicjalizacja kamery
 cap = cv2.VideoCapture(0)
 
-print("Kontroler gotowy. Uruchamiam podgląd z kamery...")
+print("Kontroler gotowy. Uruchamiam podgląd z kamery")
 
 
 # funkcja pomocnicza do kliknięcia klawiszem
@@ -86,9 +90,9 @@ def trigger_mouse_click(button):
     mouse.click(button)
 
 
-#  funkcja sterowania relatywnego - joystick
+#  funkcja sterowania relatywnego - joystick (z b_x, b_y)
 
-def process_relative_mouse_control(normalized_x, normalized_y):
+def process_relative_mouse_control(normalized_x, normalized_y, b_x, b_y):
 
     #obliczam relatywny ruch kursora joystick na podstawie przesunięcia punktu.
 
@@ -96,25 +100,25 @@ def process_relative_mouse_control(normalized_x, normalized_y):
     center_x = normalized_x
     center_y = normalized_y
 
-    # krok 2 - obliczenie odchylenia od centrum (0.5 to środek kadru)
-    delta_x = center_x - 0.5
-    delta_y = center_y - 0.5
+    # krok 2 - obliczenie odchylenia od dynamicznego srodka (b_x, b_y)
+    delta_x = center_x - b_x
+    delta_y = center_y - b_y
 
     move_x = 0
     # logika dla osi x
     if abs(delta_x) > DEAD_ZONE:
         # obciążam ruch o martwą strefę a potem skaluję czułością
-        if delta_x > 0:  # ruch w prawo (x > 0.5)
+        if delta_x > 0:  # ruch w prawo
             move_x = (delta_x - DEAD_ZONE) * SENSITIVITY
-        else:  # ruch w lewo (x < 0.5)
+        else:  # ruch w lewo
             move_x = (delta_x + DEAD_ZONE) * SENSITIVITY
 
     move_y = 0
     # logika dla osi y
     if abs(delta_y) > DEAD_ZONE:
-        if delta_y > 0:  # ruch w dół y rośnie
+        if delta_y > 0:  # ruch w dół
             move_y = (delta_y - DEAD_ZONE) * SENSITIVITY
-        else:  # ruch w górę y maleje
+        else:  # ruch w górę
             move_y = (delta_y + DEAD_ZONE) * SENSITIVITY
 
     # wykonuję relatywny ruch myszą
@@ -155,10 +159,16 @@ while cap.isOpened():
             # używam landmark 0 (nose) z pose jako punktu kontrolnego
             center_of_head = pose_results.pose_landmarks.landmark[mp_pose.PoseLandmark.NOSE]
 
-            # wywołuję funkcję mojego joysticka
+            # srodek powoli plynie za nosem dzieki czemu nie trzeba siedziec idealnie prosto choc wtedy troche gorzej dziala
+            base_x = (base_x * (1 - SMOOTH_FACTOR)) + (center_of_head.x * SMOOTH_FACTOR)
+            base_y = (base_y * (1 - SMOOTH_FACTOR)) + (center_of_head.y * SMOOTH_FACTOR)
+
+            # wywołuję funkcję mojego joysticka z nowym srodkiem
             current_gesture = process_relative_mouse_control(
                 center_of_head.x,
-                center_of_head.y
+                center_of_head.y,
+                base_x,
+                base_y
             )
 
             # rysowanie punktów pose
@@ -172,7 +182,7 @@ while cap.isOpened():
         except IndexError:
             current_gesture = "detekcja pose: błąd punktu"
 
-    #  analiza gestów dłoni - reczna logika
+    #  analiza gestów dłoni
 
     if hands_results.multi_hand_landmarks:
 
@@ -290,7 +300,7 @@ while cap.isOpened():
 
     #  wizualizacja i zamykanie
 
-    status_text = f"gest: {current_gesture if current_gesture else 'brak'}. sens: {SENSITIVITY} / dead: {DEAD_ZONE}"
+    status_text = f"aktualny gest: {current_gesture if current_gesture else 'brak'}. baza: {base_x:.2f}, {base_y:.2f}"
     cv2.putText(image, status_text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2, cv2.LINE_AA)
 
     cv2.imshow('kontroler (pose + hands)', image)
