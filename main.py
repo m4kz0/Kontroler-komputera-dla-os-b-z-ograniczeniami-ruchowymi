@@ -12,12 +12,19 @@ aktualny stan projektu - wersja przyblizona do tej do oddania
 twarz a dokladnie nos to sterowanie myszka
 otwarcie ust to wspomaganie pisania, taka autokorekta troche
 ruch prawej reki w lewo to lewy mouse click
+przytrzymanie prawej reki na lewo to przytrzymanie lewego mouse clicka
 ruch prawej reki w prawo to prawy mouse click
-program uruchamia klawiature przy odpaleniu
-i zamyka przy wylaczaniu
-mozna wylaczyc program zamykajac oczy na iles sekund
+lewa reka w lewo scroll w gore
+prawa reka w lewo scroll w dol
+program uruchamia klawiature przy mrugnieciu 3 razy
+program wylacza klawiature przy mrugnieciu 3 razy
+mozna wylaczyc program zamykajac oczy na iles sekund (teraz 5)
 '''
+
 warnings.filterwarnings('ignore', category=UserWarning)
+
+#zmienna mowiaca czy lewy mouse click jest przytrzymany - flaga
+is_left_held = False
 
 # Ustawienia globalne
 ACTION_COOLDOWN = 0.5
@@ -37,8 +44,23 @@ MOUTH_OPEN_THRESHOLD = 0.03
 mouth_cooldown = 1.5
 
 # Parametry dla detekcji kliknięć łokciem
-ELBOW_LEFT_CLICK_THRESHOLD = -0.08 # jak mocno trzeba dac reke w lewo zeby byl klik
+ELBOW_LEFT_CLICK_THRESHOLD = -0.06 # jak mocno trzeba dac reke w lewo zeby byl klik
 ELBOW_RIGHT_CLICK_THRESHOLD = 0.05 #jak mocno trzeba dac reke w prawo zeby byl klik
+ELBOW_RELEASE_THRESHOLD = -0.04     # NOWY - próg dla puszczenia przycisku (bliżej środka)
+
+# do przytrzymania lewego klika
+HOLD_THRESHOLD_TIME = 0.5  # Po jakim czasie (sekundy) klik zamienia się w trzymanie
+left_elbow_press_start_time = None
+has_clicked_once = False # Flaga pomocnicza
+
+# Parametry dla detekcji scrollowania lewa reka
+LEFT_HAND_SCROLL_UP_THRESHOLD = 0.05     # Lewa ręka w prawo = scroll w górę
+LEFT_HAND_SCROLL_DOWN_THRESHOLD = -0.03  # Lewa ręka w lewo = scroll w dół
+SCROLL_SPEED = 20  # Prędkość scrollowania
+
+# Dynamiczny środek dla pozycji lewego łokcia
+base_left_elbow_offset_x = 0.0
+left_elbow_initialized = False
 
 # Dynamiczny środek dla pozycji łokcia
 base_elbow_offset_x = 0.0
@@ -48,6 +70,12 @@ ELBOW_SMOOTH_FACTOR = 0.02
 EYES_CLOSED_THRESHOLD = 0.005 #bardzo mocno zamkniete oczy
 EYES_CLOSED_DURATION = 5.0 #czas trwania zamkniecia oczu
 eyes_closed_start_time = None
+
+# potrojne mrugniecie - parametry
+blink_count = 0
+last_blink_time = 0
+blink_cooldown = 0.5  # Maksymalny czas między mrugnięciami (sekundy)
+is_blinking = False   # Flaga zapobiegająca liczeniu jednej klatki jako wielu mrugnięć
 
 # Inicjalizacja kontrolerów i modelu
 keyboard = KeyboardController()
@@ -69,7 +97,7 @@ def openORclose_keyboard_via_click():
     print("LOG: Próba aktywacji klawiatury przez kliknięcie w pasek menu...")
 
     # Ikona klawiatury na screenie jest blisko prawej strony
-    target_x1 = 1180 # jak jest globus i
+    target_x1 = 1180 # jak jest globus, klawiatura, spotify
     target_y1 = 20
 
     # Przesunięcie i klik
@@ -113,8 +141,10 @@ mp_drawing = mp.solutions.drawing_utils
 
 # wlaczenie kamery
 cap = cv2.VideoCapture(0)
+'''
 if cap.isOpened():
     openORclose_keyboard_via_click()
+'''
 print("Kontroler gestów uruchomiony")
 print("Głowa = sterowanie myszką")
 print("Usta otwarte = wspomaganie pisania")
@@ -215,6 +245,35 @@ def detect_eyes_closed(face_landmarks):
     except (IndexError, AttributeError):
         return (False, 0.0)
 
+# Funkcja detekcji scrollowania lewą ręką
+def detect_left_hand_scroll(landmarks, base_offset):
+    try:
+        # Pobieram współrzędne lewego barku i łokcia (przy lustrzanym odbiciu to RIGHT w kodzie)
+        right_shoulder = landmarks[mp_pose.PoseLandmark.RIGHT_SHOULDER]
+        right_elbow = landmarks[mp_pose.PoseLandmark.RIGHT_ELBOW]
+
+        # Obliczam względną pozycję łokcia względem barku
+        raw_offset = right_elbow.x - right_shoulder.x
+
+        # Obliczam odchylenie od dynamicznego środka
+        deviation = raw_offset - base_offset
+
+        # Sprawdzam czy przekroczono progi
+        scroll_type = None
+
+        # lokiec na prawo fizycznie lewa ręka = scroll gora
+        if deviation > LEFT_HAND_SCROLL_UP_THRESHOLD:
+            scroll_type = "up"
+
+        # lokiec na lewo fizycznie lewa ręka = scroll dol
+        elif deviation < LEFT_HAND_SCROLL_DOWN_THRESHOLD:
+            scroll_type = "down"
+
+        return (scroll_type, deviation)
+
+    except (IndexError, AttributeError):
+        return (None, 0.0)
+
 
 # Funkcja detekcji kliknięć łokciem
 def detect_elbow_click(landmarks, base_offset):
@@ -278,12 +337,45 @@ while cap.isOpened():
     elbow_deviation = 0.0
     mouth_distance = 0.0
     eyes_distance = 0.0
-    eyes_closed_time_remaining = 0.0
 
+    eyes_closed_time_remaining = 0.0
     # Przetwarzanie wykrytych landmarków z Pose
     if pose_results.pose_landmarks:
 
         landmarks = pose_results.pose_landmarks.landmark
+
+        # Inicjalizacja bazowej pozycji lewego łokcia (dla scrollowania)
+        try:
+            right_shoulder = landmarks[mp_pose.PoseLandmark.RIGHT_SHOULDER]
+            right_elbow = landmarks[mp_pose.PoseLandmark.RIGHT_ELBOW]
+            raw_left_elbow_offset = right_elbow.x - right_shoulder.x
+
+            if not left_elbow_initialized:
+                base_left_elbow_offset_x = raw_left_elbow_offset
+                left_elbow_initialized = True
+                print("Zkalibrowano pozycję spoczynkową lewego łokcia")
+
+            # Detekcja scrollowania lewą ręką
+            scroll_type, left_elbow_deviation = detect_left_hand_scroll(landmarks, base_left_elbow_offset_x)
+
+            # Aktualizacja dynamicznego środka dla lewego łokcia
+            if scroll_type is None:
+                base_left_elbow_offset_x = (base_left_elbow_offset_x * (1.0 - ELBOW_SMOOTH_FACTOR)) + (
+                        raw_left_elbow_offset * ELBOW_SMOOTH_FACTOR)
+
+            # Wykonanie scrollowania bez blokowania całego programu cooldownem
+            if scroll_type is not None:
+                # mniejsze lokalne opoznienie zeby nie scrollowac za szybko
+                # bez aktualizacji globalnego last_action_time
+                if scroll_type == "up":
+                    mouse.scroll(0, 1)  # mniejszy krok ale wykonywany w każdej klatce = płynność
+                    gesture_text = "SCROLL W GÓRĘ"
+                elif scroll_type == "down":
+                    mouse.scroll(0, -1)
+                    gesture_text = "SCROLL W DÓŁ"
+
+        except (IndexError, AttributeError):
+            pass
 
         try:
             # Sterowanie myszką głową
@@ -306,6 +398,7 @@ while cap.isOpened():
 
             gesture_text = f"Mysz X:{move_x:.0f} Y:{move_y:.0f}"
 
+
             # Detekcja kliknięć łokciem
             left_shoulder = landmarks[mp_pose.PoseLandmark.LEFT_SHOULDER]
             left_elbow = landmarks[mp_pose.PoseLandmark.LEFT_ELBOW]
@@ -324,21 +417,50 @@ while cap.isOpened():
             click_type, elbow_deviation = detect_elbow_click(landmarks, base_elbow_offset_x)
 
             # Aktualizacja dynamicznego środka
-            base_elbow_offset_x = (base_elbow_offset_x * (1.0 - ELBOW_SMOOTH_FACTOR)) + (
-                    raw_elbow_offset * ELBOW_SMOOTH_FACTOR)
+            if click_type is None:
+                base_elbow_offset_x = (base_elbow_offset_x * (1.0 - ELBOW_SMOOTH_FACTOR)) + (
+                        raw_elbow_offset * ELBOW_SMOOTH_FACTOR)
+            else:
+                # mozna jeszcze bardziej spowolnić wygładzanie
+                # ale najlepiej całkowicie je wstrzymać podczas trzymania kliku.
+                pass
 
             # Wykonanie kliknięcia jeśli wykryto gest i minął cooldown
-            if click_type is not None and (current_time - last_action_time) > ACTION_COOLDOWN:
+            # hold dla lewego klika/albo zwykly klik i prawy klik
+            if click_type == "left":
+                if left_elbow_press_start_time is None:
+                    # Moment pierwszego wychylenia ręki
+                    left_elbow_press_start_time = current_time
+                    mouse.press(Button.left)
+                    is_left_held = True
+                    has_clicked_once = False
+                    print("LOG: Start nacisku...")
 
-                if click_type == "right":
-                    mouse.click(Button.right)
-                    gesture_text = "PRAWY KLIK (prawa ręka w prawo)"
-                    last_action_time = current_time
+                # jesli trzyma dlugo uznajemy to za hold
+                elif not has_clicked_once and (current_time - left_elbow_press_start_time) > HOLD_THRESHOLD_TIME:
+                    gesture_text = "TRYB: PRZECIĄGANIE (HOLD)"
 
-                elif click_type == "left":
-                    mouse.click(Button.left)
-                    gesture_text = "LEWY KLIK (prawa ręka w lewo)"
-                    last_action_time = current_time
+            else:
+                # jesli reka na jest na lewo - wrocila do srodka
+                if is_left_held:
+                    press_duration = current_time - left_elbow_press_start_time
+                    mouse.release(Button.left)
+
+                    if press_duration < HOLD_THRESHOLD_TIME:
+                        print(f"LOG: Krótkie kliknięcie ({press_duration:.2f}s)")
+                        gesture_text = "LEWY KLIK"
+                    else:
+                        print(f"LOG: Koniec przeciągania ({press_duration:.2f}s)")
+                        gesture_text = "PUSZCZONO (DRAG END)"
+
+                    # Reset zmiennych
+                    is_left_held = False
+                    left_elbow_press_start_time = None
+            # Prawy klik zostawiamy jako pojedynczy impuls
+            if click_type == "right" and (current_time - last_action_time) > ACTION_COOLDOWN:
+                mouse.click(Button.right)
+                gesture_text = "PRAWY KLIK"
+                last_action_time = current_time
 
             # Rysowanie landmarków Pose na obrazzie
             mp_drawing.draw_landmarks(
@@ -359,46 +481,57 @@ while cap.isOpened():
             # Sprawdzam czy usta są otwarte
             is_mouth_open, mouth_distance = detect_mouth_open_face_mesh(face_landmarks)
 
-            # Wykonanie akcji F5 jeśli usta otwarte i minął cooldown
+            # jesli minal cooldown i usta sa otwarte to f5- wspomaganie pisania
             if is_mouth_open and (current_time - last_action_time) > mouth_cooldown:
                 keyboard.press(Key.f5)
                 keyboard.release(Key.f5)
                 gesture_text = "F5 DYKTOWANIE (usta)"
                 last_action_time = current_time
 
-            # Sprawdzam czy oczy są zamknięte
+            # Sprawdzam stan oczu
             eyes_closed, eyes_distance = detect_eyes_closed(face_landmarks)
 
-            # Logika dla zamykania programu przez zamknięte oczy
             if eyes_closed:
-                # Jeśli oczy są zamknięte i jeszcze nie zaczęliśmy liczyć czasu
+                # potrojne mrugniecie - odpalenie klawiatury
+                if not is_blinking:
+                    is_blinking = True  # blokada - liczy mrugniecia tylko raz
+                    current_time_blink = time.time()
+
+                    # sprawdzam czy to mrugnięcie mieści się w czasie od poprzedniego
+                    if current_time_blink - last_blink_time < 0.8:  # 0,8s dla lepszej czulosci
+                        blink_count += 1
+                    else:
+                        blink_count = 1  # jesli przerwa byla za duza to reset licznika
+
+                    last_blink_time = current_time_blink
+                    print(f"DEBUG: Mrugnięcie {blink_count}/3")
+
+                    if blink_count >= 3:
+                        print("LOG: Wykryto 3 mrugnięcia - URUCHAMIAM KLAWIATURĘ")
+                        openORclose_keyboard_via_click()
+                        blink_count = 0  # Reset po sukcesie
+
+                # zamykanie programu poprzez trzymanie zamknietych oczu
                 if eyes_closed_start_time is None:
                     eyes_closed_start_time = current_time
                     print("Oczy zamknięte - rozpoczęto odliczanie...")
 
-                # Obliczam ile czasu oczy są już zamknięte
                 eyes_closed_duration = current_time - eyes_closed_start_time
                 eyes_closed_time_remaining = EYES_CLOSED_DURATION - eyes_closed_duration
 
-                # Jeśli oczy są zamknięte przez wymagany czas - wychodzimy z programu
                 if eyes_closed_duration >= EYES_CLOSED_DURATION:
-                    print(f"Oczy zamknięte przez {EYES_CLOSED_DURATION:.3f} sekund - zamykanie programu...")
+                    print(f"Oczy zamknięte przez {EYES_CLOSED_DURATION:.3f} sekund - zamykanie...")
                     gesture_text = "ZAMYKANIE PROGRAMU POPRZEZ OCZY"
-                    cv2.putText(
-                        image,
-                        "ZAMYKANIE...",
-                        (image.shape[1] // 2 - 150, image.shape[0] // 2),
-                        cv2.FONT_HERSHEY_SIMPLEX,
-                        2.0,
-                        (0, 0, 255),
-                        4,
-                        cv2.LINE_AA
-                    )
+                    cv2.putText(image, "ZAMYKANIE...", (image.shape[1] // 2 - 150, image.shape[0] // 2),
+                                cv2.FONT_HERSHEY_SIMPLEX, 2.0, (0, 0, 255), 4, cv2.LINE_AA)
                     cv2.imshow('Kontroler Gestow', image)
                     cv2.waitKey(1000)
                     break
             else:
-                # Oczy otwarte - resetujemy licznik
+                # gdy oczy znowu otwarte - resetowanie flagi
+                is_blinking = False
+
+                # oczy otwarte - resetujemy licznik zamykania
                 if eyes_closed_start_time is not None:
                     print("Oczy otwarte - anulowano zamykanie")
                 eyes_closed_start_time = None
@@ -469,11 +602,14 @@ while cap.isOpened():
     # Sprawdzenie czy wciśnięto ESC lub zamkniete oczy przez 5s
     key = cv2.waitKey(5) & 0xFF
     if key == 27 or eyes_closed_time_remaining < 0:
+        if is_left_held:
+            mouse.release(Button.left)
         print("Zamykanie programu")
-        openORclose_keyboard_via_click()
+        #openORclose_keyboard_via_click()
         break
 
 # Sprzątanie
 cap.release()
 cv2.destroyAllWindows()
 print("Program zakończony pomyślnie")
+
