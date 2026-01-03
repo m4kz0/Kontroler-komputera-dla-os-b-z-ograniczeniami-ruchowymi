@@ -13,7 +13,9 @@ twarz a dokladnie nos to sterowanie myszka
 otwarcie ust to wspomaganie pisania, taka autokorekta troche
 ruch prawej reki w lewo to lewy mouse click
 przytrzymanie prawej reki na lewo to przytrzymanie lewego mouse clicka
+podniesienie brwi to szybkie dwa lewe kliki
 ruch prawej reki w prawo to prawy mouse click
+obie rece na zewnatrz to zablokowanie myszki, nie rusza sie kursor
 lewa reka w lewo scroll w gore
 prawa reka w lewo scroll w dol
 program uruchamia klawiature przy mrugnieciu 3 razy
@@ -39,6 +41,14 @@ base_nose_x = 0.5
 base_nose_y = 0.5
 NOSE_SMOOTH_FACTOR = 0.01
 
+# blokada myszki
+is_mouse_locked = False
+hands_currently_wide = False
+HANDS_WIDE_THRESHOLD = 0.03    # maly ruch do aktywacji
+HANDS_RELEASE_THRESHOLD = 0.03 # nizszy prog dla powrotu rak
+last_lock_toggle_time = 0      # czas ostatniego przelaczenie
+LOCK_TOGGLE_COOLDOWN = 1.0     # sekunda - przerwy między przełączeniami
+
 # Parametry dla detekcji otwarcia ust
 MOUTH_OPEN_THRESHOLD = 0.03
 mouth_cooldown = 1.5
@@ -46,12 +56,18 @@ mouth_cooldown = 1.5
 # Parametry dla detekcji kliknięć łokciem
 ELBOW_LEFT_CLICK_THRESHOLD = -0.06 # jak mocno trzeba dac reke w lewo zeby byl klik
 ELBOW_RIGHT_CLICK_THRESHOLD = 0.05 #jak mocno trzeba dac reke w prawo zeby byl klik
-ELBOW_RELEASE_THRESHOLD = -0.04     # NOWY - próg dla puszczenia przycisku (bliżej środka)
+ELBOW_RELEASE_THRESHOLD = -0.04     # prog dla puszczenia przycisku blizej srodka reka
 
 # do przytrzymania lewego klika
 HOLD_THRESHOLD_TIME = 0.5  # Po jakim czasie (sekundy) klik zamienia się w trzymanie
 left_elbow_press_start_time = None
 has_clicked_once = False # Flaga pomocnicza
+
+# podwojny klik brwiami
+BROW_JUMP_THRESHOLD = 0.01  # o ile brwi muszą się podnieść ponad stan spoczynkowy
+base_brow_dist = 0.0         # kalibrowana odległość spoczynkowa
+brow_initialized = False     # flaga kalibracji
+BROW_SMOOTH_FACTOR = 0.05   # jak szybko system adaptuje się do nowej mimiki
 
 # Parametry dla detekcji scrollowania lewa reka
 LEFT_HAND_SCROLL_UP_THRESHOLD = 0.05     # Lewa ręka w prawo = scroll w górę
@@ -305,6 +321,22 @@ def detect_elbow_click(landmarks, base_offset):
         return (None, 0.0)
 
 
+def detect_brow_jump(face_landmarks, current_base_dist):
+    try:
+        # 105: środek brwi, 159: góra powieki
+        brow_top = face_landmarks.landmark[105]
+        eye_top = face_landmarks.landmark[159]
+
+        current_dist = abs(brow_top.y - eye_top.y)
+        deviation = current_dist - current_base_dist
+
+        # jeśli różnica jest większa niż próg to skok brwi
+        is_jump = deviation > BROW_JUMP_THRESHOLD
+
+        return (is_jump, current_dist, deviation)
+    except (IndexError, AttributeError):
+        return (False, 0.0, 0.0)
+
 elbow_initialized = False
 
 # glowna pętla programu
@@ -359,9 +391,10 @@ while cap.isOpened():
             scroll_type, left_elbow_deviation = detect_left_hand_scroll(landmarks, base_left_elbow_offset_x)
 
             # Aktualizacja dynamicznego środka dla lewego łokcia
-            if scroll_type is None:
-                base_left_elbow_offset_x = (base_left_elbow_offset_x * (1.0 - ELBOW_SMOOTH_FACTOR)) + (
-                        raw_left_elbow_offset * ELBOW_SMOOTH_FACTOR)
+            if not (elbow_deviation > HANDS_WIDE_THRESHOLD and left_elbow_deviation < -HANDS_WIDE_THRESHOLD):
+                if scroll_type is None:
+                    base_left_elbow_offset_x = (base_left_elbow_offset_x * (1.0 - ELBOW_SMOOTH_FACTOR)) + (
+                            raw_left_elbow_offset * ELBOW_SMOOTH_FACTOR)
 
             # Wykonanie scrollowania bez blokowania całego programu cooldownem
             if scroll_type is not None:
@@ -388,15 +421,18 @@ while cap.isOpened():
             base_nose_x = (base_nose_x * (1.0 - NOSE_SMOOTH_FACTOR)) + (current_nose_x * NOSE_SMOOTH_FACTOR)
             base_nose_y = (base_nose_y * (1.0 - NOSE_SMOOTH_FACTOR)) + (current_nose_y * NOSE_SMOOTH_FACTOR)
 
-            # Wykonanie ruchu myszą
-            move_x, move_y = move_mouse_with_head(
-                current_nose_x,
-                current_nose_y,
-                base_nose_x,
-                base_nose_y
-            )
+            # Wykonanie ruchu myszą TYLKO jeśli nie ma blokady
+            if not is_mouse_locked:
+                move_x, move_y = move_mouse_with_head(
+                    current_nose_x,
+                    current_nose_y,
+                    base_nose_x,
+                    base_nose_y
+                )
+                gesture_text = f"Mysz X:{move_x:.0f} Y:{move_y:.0f}"
+            else:
+                gesture_text = "MYSZ ZABLOKOWANA"
 
-            gesture_text = f"Mysz X:{move_x:.0f} Y:{move_y:.0f}"
 
 
             # Detekcja kliknięć łokciem
@@ -416,10 +452,27 @@ while cap.isOpened():
             # Wykonanie kliknięcia jeśli wykryto gest i minął cooldown
             click_type, elbow_deviation = detect_elbow_click(landmarks, base_elbow_offset_x)
 
-            # Aktualizacja dynamicznego środka
-            if click_type is None:
-                base_elbow_offset_x = (base_elbow_offset_x * (1.0 - ELBOW_SMOOTH_FACTOR)) + (
-                        raw_elbow_offset * ELBOW_SMOOTH_FACTOR)
+            # blokada myszki
+            is_wide_trigger = elbow_deviation > HANDS_WIDE_THRESHOLD and left_elbow_deviation < -HANDS_WIDE_THRESHOLD
+            is_fully_released = elbow_deviation < HANDS_RELEASE_THRESHOLD and left_elbow_deviation > -HANDS_RELEASE_THRESHOLD
+
+            if is_wide_trigger:
+                # wprawdza czy minął cooldown i czy gest nie jest kontynuacją poprzedniego
+                if not hands_currently_wide and (current_time - last_lock_toggle_time) > LOCK_TOGGLE_COOLDOWN:
+                    is_mouse_locked = not is_mouse_locked
+                    last_lock_toggle_time = current_time
+                    hands_currently_wide = True
+                    print(f"LOG: Blokada myszy: {is_mouse_locked}")
+
+            # resett flagi 'wide' tylko gdy ręce wrócą wyraźnie do środka
+            if is_fully_released:
+                hands_currently_wide = False
+
+            # aktualizuje baze tylko gdy nie ma gestu szerokich rąk
+            if not (elbow_deviation > HANDS_WIDE_THRESHOLD and left_elbow_deviation < -HANDS_WIDE_THRESHOLD):
+                if click_type is None:
+                    base_elbow_offset_x = (base_elbow_offset_x * (1.0 - ELBOW_SMOOTH_FACTOR)) + (
+                            raw_elbow_offset * ELBOW_SMOOTH_FACTOR)
             else:
                 # mozna jeszcze bardziej spowolnić wygładzanie
                 # ale najlepiej całkowicie je wstrzymać podczas trzymania kliku.
@@ -453,6 +506,7 @@ while cap.isOpened():
                         print(f"LOG: Koniec przeciągania ({press_duration:.2f}s)")
                         gesture_text = "PUSZCZONO (DRAG END)"
 
+
                     # Reset zmiennych
                     is_left_held = False
                     left_elbow_press_start_time = None
@@ -485,7 +539,7 @@ while cap.isOpened():
             if is_mouth_open and (current_time - last_action_time) > mouth_cooldown:
                 keyboard.press(Key.f5)
                 keyboard.release(Key.f5)
-                gesture_text = "F5 DYKTOWANIE (usta)"
+                gesture_text = "F5 WSPOMAGANIE PISANIA (usta)"
                 last_action_time = current_time
 
             # Sprawdzam stan oczu
@@ -514,15 +568,15 @@ while cap.isOpened():
                 # zamykanie programu poprzez trzymanie zamknietych oczu
                 if eyes_closed_start_time is None:
                     eyes_closed_start_time = current_time
-                    print("Oczy zamknięte - rozpoczęto odliczanie...")
+                    print("Oczy zamknięte - rozpoczęto odliczanie")
 
                 eyes_closed_duration = current_time - eyes_closed_start_time
                 eyes_closed_time_remaining = EYES_CLOSED_DURATION - eyes_closed_duration
 
                 if eyes_closed_duration >= EYES_CLOSED_DURATION:
-                    print(f"Oczy zamknięte przez {EYES_CLOSED_DURATION:.3f} sekund - zamykanie...")
+                    print(f"Oczy zamknięte przez {EYES_CLOSED_DURATION:.3f} sekund - zamykanie kontrolera")
                     gesture_text = "ZAMYKANIE PROGRAMU POPRZEZ OCZY"
-                    cv2.putText(image, "ZAMYKANIE...", (image.shape[1] // 2 - 150, image.shape[0] // 2),
+                    cv2.putText(image, "ZAMYKANIE", (image.shape[1] // 2 - 150, image.shape[0] // 2),
                                 cv2.FONT_HERSHEY_SIMPLEX, 2.0, (0, 0, 255), 4, cv2.LINE_AA)
                     cv2.imshow('Kontroler Gestow', image)
                     cv2.waitKey(1000)
@@ -535,6 +589,26 @@ while cap.isOpened():
                 if eyes_closed_start_time is not None:
                     print("Oczy otwarte - anulowano zamykanie")
                 eyes_closed_start_time = None
+
+                # podwojny klik brwiami
+                is_brow_jump, cur_brow_dist, brow_dev = detect_brow_jump(face_landmarks, base_brow_dist)
+
+                # baza w 1 klatce
+                if not brow_initialized:
+                    base_brow_dist = cur_brow_dist
+                    brow_initialized = True
+
+                # aktualizacja pozycji brwi w spoczynku
+                if not is_brow_jump:
+                    base_brow_dist = (base_brow_dist * (1.0 - BROW_SMOOTH_FACTOR)) + (
+                                cur_brow_dist * BROW_SMOOTH_FACTOR)
+
+                # podwojny klik
+                if is_brow_jump and (current_time - last_action_time) > ACTION_COOLDOWN:
+                    mouse.click(Button.left, 2)  # dwojka w nawiasie - podwojne klikniecie
+                    gesture_text = "DOUBLE CLICK (BRWI)"
+                    last_action_time = current_time
+                    print(f"LOG: Double Click! Odchylenie: {brow_dev:.4f}")
 
             # Rysowanie punktów twarzy
             mp_drawing.draw_landmarks(
