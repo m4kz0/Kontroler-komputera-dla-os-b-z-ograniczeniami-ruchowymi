@@ -65,7 +65,7 @@ left_elbow_press_start_time = None #zapisuje moment w ktorym odchylony zostal lo
 has_clicked_once = False # Flaga pomocnicza, zeby nie bylo klikniecia w kazdej klatce
 
 # podwojny klik brwiami
-BROW_JUMP_THRESHOLD = 0.01  # o ile brwi muszą się podnieść ponad stan spoczynkowy
+BROW_JUMP_THRESHOLD = 0.011  # o ile brwi muszą się podnieść ponad stan spoczynkowy
 base_brow_dist = 0.0         # kalibrowana odległość spoczynkowa
 brow_initialized = False     # flaga kalibracji
 BROW_SMOOTH_FACTOR = 0.05   # jak szybko system adaptuje się do nowej mimiki
@@ -117,7 +117,7 @@ def openORclose_keyboard_via_click():
     original_position = mouse.position
 
     # Ikona klawiatury na screenie jest blisko prawej strony
-    target_x1 = 1180 # jak jest globus, klawiatura, spotify
+    target_x1 = 1200 # jak jest globus, klawiatura, spotify, bateria ,wifi, lupa, suwaki, data, godzina
     target_y1 = 20
 
     # Przesunięcie i klik
@@ -127,7 +127,7 @@ def openORclose_keyboard_via_click():
     time.sleep(0.3)
 
     #klikniecie docelowego podgladu klawiatury
-    target_x2 = 1180
+    target_x2 = 1200
     target_y2 = 80
 
     # Przesunięcie i klik
@@ -369,6 +369,7 @@ frame_count = 0
 # glowna pętla programu
 while cap.isOpened():
 
+    left_elbow_deviation = 0.0
     # Odczyt klatki z kamery
     success, image = cap.read()
     if not success:
@@ -399,7 +400,8 @@ while cap.isOpened():
 
     eyes_closed_time_remaining = 0.0 #czas do zamkniecia programu
     # Przetwarzanie wykrytych landmarków z Pose
-    if pose_results.pose_landmarks: #jesli wykryto sylwetke
+    #if pose_results.pose_landmarks: #jesli wykryto sylwetke
+    if hasattr(pose_results, 'pose_landmarks') and pose_results.pose_landmarks: #jesli istnieja te landmarki i wykryto osobe
         landmarks = pose_results.pose_landmarks.landmark
 
         # Inicjalizacja bazowej pozycji lewego łokcia (dla scrollowania), robimy try czy wykryje
@@ -586,7 +588,8 @@ while cap.isOpened():
 
 
     # Detekcja otwarcia ust i zamkniętych oczu z Face Mesh
-    if face_results.multi_face_landmarks: #jesli znaleziono twarz
+    #if face_results.multi_face_landmarks: #jesli znaleziono twarz
+    if hasattr(face_results, 'multi_face_landmarks') and face_results.multi_face_landmarks: #jesli istnieja te landmarki i wykryto twarz
         for face_landmarks in face_results.multi_face_landmarks:
             eyes_closed, eyes_distance = detect_eyes_closed(face_landmarks) #wywoluje funkcje, zeby sprawdzic czy oczy zamkniete
             if eyes_closed:
